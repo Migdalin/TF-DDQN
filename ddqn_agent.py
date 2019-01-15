@@ -1,8 +1,8 @@
 
 from collections import namedtuple
 import numpy as np
+from time import time
 import random
-from pathlib import Path
 import tensorflow as tf
 from tensorflow.layers import Dense
 
@@ -29,9 +29,10 @@ class DdqnAgent():
         self.SetDefaultParameters(action_size, batchHelper)
         self.trainingModel = self.BuildModel('online')
         self.targetModel = self.BuildModel('target')
+        self.InitStatsWriter()
         #self.LoadModelInfo()
         self.session.run(tf.global_variables_initializer())
-        #self.UpdateTargetModel()
+        self.UpdateTargetModel()
     
     def SetDefaultParameters(self, action_size, batchHelper):
         self.state_size = DdqnGlobals.STATE_DIMENSIONS
@@ -52,7 +53,12 @@ class DdqnAgent():
         self.total_episodes = 0
         self.gamma = 0.99
         self.learning_rate = 0.00001
-        
+
+    def InitStatsWriter(self):        
+        self.statsWriter = tf.summary.FileWriter(f"tensorboard/{int(time())}")
+        tf.summary.scalar("Loss", self.trainingModel.cost)
+        self.writeStatsOp = tf.summary.merge_all()
+        self.next_summary_checkpoint = self._delayTraining
         self.SaveWeightsFilename = "DdqnWeights.h5"
     
     def BuildConv2D(self, convArgs, modelName):
@@ -128,7 +134,6 @@ class DdqnAgent():
                               kernel_initializer=xavierInit,
                               name=modelName+'advantage')(advantageInput)
 
-
             # VALUE
             valueInput = Dense(units = 512, 
                                activation='relu', 
@@ -171,6 +176,12 @@ class DdqnAgent():
         
             return modelInfo
         
+    # Write TF Summaries
+    def WriteStats(self, feedDict):
+        summary = self.session.run(self.writeStatsOp, feed_dict=feedDict)
+        self.statsWriter.add_summary(summary, self.total_step_count)
+        self.statsWriter.flush()
+
     def Replay(self):
         if(self.total_step_count < self._delayTraining):
             return
@@ -191,10 +202,16 @@ class DdqnAgent():
         
         # Fit the keras model. Note how we are passing the actions as the mask and multiplying
         # the targets by the actions.
+        feedDict = {self.trainingModel.frames: start_states,
+                    self.trainingModel.actionsMask: actions,
+                    self.trainingModel.targetQ: targetQ}
+        
         self.session.run([self.trainingModel.optimizer, self.trainingModel.cost],
-                         feed_dict={self.trainingModel.frames: start_states,
-                                    self.trainingModel.actionsMask: actions,
-                                    self.trainingModel.targetQ: targetQ})
+                         feed_dict=feedDict)
+        
+        if(self.total_step_count > self.next_summary_checkpoint):
+            self.WriteStats(feedDict)
+            self.next_summary_checkpoint = self.update_target_rate + self.total_step_count
     
     # get action from model using epsilon-greedy policy
     def GetAction(self):
@@ -243,7 +260,7 @@ class DdqnAgent():
 
     #def SaveModelInfo(self):
     #    self.targetModel.save_weights(self.SaveWeightsFilename)
-    
+
     def UpdateAndSave(self):
         self.UpdateTargetModel()
         self.current_step_count = 0
