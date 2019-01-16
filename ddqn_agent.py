@@ -229,15 +229,15 @@ class DdqnAgent():
         return np.argmax(q_value[0])
 
     def UpdateTargetModelInternal(self):
-        # Get the parameters of our DQNNetwork
+        # Get the parameters of our training network
         from_vars = tf.get_collection(tf.GraphKeys.TRAINABLE_VARIABLES, self.trainingModel.modelName)
         
-        # Get the parameters of our Target_network
+        # Get the parameters of our target_network
         to_vars = tf.get_collection(tf.GraphKeys.TRAINABLE_VARIABLES, self.targetModel.modelName)
     
         op_holder = []
         
-        # Update our target_network parameters with DQNNetwork parameters
+        # Update our target_network parameters with training_network parameters
         for from_var,to_var in zip(from_vars,to_vars):
             op_holder.append(to_var.assign(from_var))
         return op_holder
