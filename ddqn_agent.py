@@ -24,9 +24,12 @@ ConvArgs.__new__.__defaults__ = (None,) * len(ConvArgs._fields)
 
 
 class DdqnAgent():
-    def __init__(self, action_size, batchHelper):
+    def __init__(self, agentParams, action_size, batchHelper, progressTracker):
         self.session = tf.Session()
-        self.SetDefaultParameters(action_size, batchHelper)
+        self.Params = agentParams
+        self.BatchHelper = batchHelper
+        self.SetDefaultParameters(action_size)
+        self.progressTracker = progressTracker
         self.trainingModel = self.BuildModel('online')
         self.targetModel = self.BuildModel('target')
         self.InitStatsWriter()
@@ -34,31 +37,18 @@ class DdqnAgent():
         self.session.run(tf.global_variables_initializer())
         self.UpdateTargetModel()
     
-    def SetDefaultParameters(self, action_size, batchHelper):
-        self.state_size = DdqnGlobals.STATE_DIMENSIONS
+    def SetDefaultParameters(self, action_size):
         self.action_size = action_size
-        self.BatchHelper = batchHelper
-        
-        # parameters about epsilon
-        self.epsilon_start = 1.0
-        self.epsilon = self.epsilon_start
-        self.epsilon_min = 0.05
-        self.epsilon_decay_step = 0.000002
-                                  
-        # parameters about training
-        self._delayTraining = 20000
-        self.update_target_rate = 10000
+        self.epsilon = self.Params.epsilon_start
         self.current_step_count = 0
         self.total_step_count = 0
         self.total_episodes = 0
-        self.gamma = 0.99
-        self.learning_rate = 0.00001
 
     def InitStatsWriter(self):        
         self.statsWriter = tf.summary.FileWriter(f"tensorboard/{int(time())}")
         tf.summary.scalar("Loss", self.trainingModel.cost)
         self.writeStatsOp = tf.summary.merge_all()
-        self.next_summary_checkpoint = self._delayTraining
+        self.next_summary_checkpoint = self.Params.delayTraining
         self.SaveWeightsFilename = "DdqnWeights.h5"
     
     def BuildConv2D(self, convArgs, modelName):
@@ -164,7 +154,7 @@ class DdqnAgent():
                                      name=modelName+'targetQ')
             cost = tf.losses.huber_loss(targetQ, filteredOutput)
             optimizer = tf.train.AdamOptimizer(
-                    learning_rate=self.learning_rate).minimize(cost)
+                    learning_rate=self.Params.learning_rate).minimize(cost)
 
             modelInfo = ModelInfo(modelName=modelName,
                                   frames=frames, 
@@ -180,10 +170,23 @@ class DdqnAgent():
     def WriteStats(self, feedDict):
         summary = self.session.run(self.writeStatsOp, feed_dict=feedDict)
         self.statsWriter.add_summary(summary, self.total_step_count)
+
+        summary = tf.Summary()
+        avgEpisodes = self.progressTracker.Parms.avgPerXEpisodes
+        summary.value.add(tag=f'Average Reward ({avgEpisodes} episodes)', 
+                          simple_value=self.progressTracker.GetAverageReward())
+        
+        avgEpisodes = self.progressTracker.Parms.longAvgPerXEpisodes
+        summary.value.add(tag=f'Average Reward ({avgEpisodes} episodes)', 
+                          simple_value=self.progressTracker.GetLongAverageReward())
+        
+        summary.value.add(tag='Max Reward', simple_value=self.progressTracker.GetMaxReward())
+        self.statsWriter.add_summary(summary, self.total_step_count)
+
         self.statsWriter.flush()
 
     def Replay(self):
-        if(self.total_step_count < self._delayTraining):
+        if(self.total_step_count < self.Params.delayTraining):
             return
         
         start_states, next_states, actions, rewards, gameOvers = self.BatchHelper.GetBatch()
@@ -197,7 +200,7 @@ class DdqnAgent():
         next_Q_values[gameOvers] = 0
         
         # The Q values of each start state is the reward + gamma * the max next state Q value
-        Q_values = rewards + (self.gamma * np.max(next_Q_values, axis=1))
+        Q_values = rewards + (self.Params.gamma * np.max(next_Q_values, axis=1))
         targetQ = actions * Q_values[:,None]
         
         # Fit the keras model. Note how we are passing the actions as the mask and multiplying
@@ -211,12 +214,12 @@ class DdqnAgent():
         
         if(self.total_step_count > self.next_summary_checkpoint):
             self.WriteStats(feedDict)
-            self.next_summary_checkpoint = self.update_target_rate + self.total_step_count
+            self.next_summary_checkpoint = self.Params.update_target_rate + self.total_step_count
     
     # get action from model using epsilon-greedy policy
     def GetAction(self):
-        if self.epsilon > self.epsilon_min:
-            self.epsilon -= self.epsilon_decay_step
+        if(self.epsilon > self.Params.epsilon_min):
+            self.epsilon -= self.Params.epsilon_decay_step
         
         if random.random() <= self.epsilon:
             return random.randrange(self.action_size)
@@ -249,9 +252,6 @@ class DdqnAgent():
     def GetNoOpAction(self):
         return 0
 
-    def GetFireAction(self):
-        return 1
-
     #    def LoadModelInfo(self):
     #        weightsFile = Path(self.SaveWeightsFilename)
     #        if(weightsFile.is_file()):
@@ -273,5 +273,5 @@ class DdqnAgent():
         self.total_episodes += 1
         self.total_step_count += steps
         self.current_step_count += steps
-        if(self.current_step_count >= self.update_target_rate):
+        if(self.current_step_count >= self.Params.update_target_rate):
             self.UpdateAndSave()

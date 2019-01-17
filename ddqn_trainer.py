@@ -2,13 +2,14 @@
 import os.path
 import numpy as np
 import gym
-import time
 
 from active_memory import ActiveMemory
 from batch_helper import BatchHelper
 from ddqn_agent import DdqnAgent
 from ddqn_globals import DdqnGlobals
 from gif_saver import GifSaver
+from DataModel.progress_tracker import ProgressTracker, ProgressTrackerParms
+from hyper_parameters import StandardAgentParameters, ShortEpisodeParameters, LongEpisodeParameters
 
 '''
  Based on agents from rlcode, keon, A.L.Ecoffet, and probably several others
@@ -26,39 +27,38 @@ class ImagePreProcessor:
         return ImagePreProcessor.to_grayscale(shrunk)
 
 class EpisodeManager:
-    def __init__(self, environment, memory, action_size):
+    def __init__(self, environment, memory, action_size, miscParameters):
         self._environment = environment
         self._memory = memory
         batchHelper = BatchHelper(memory, DdqnGlobals.BATCH_SIZE, action_size)
-        self._agent = DdqnAgent(action_size, batchHelper)
-        self._gifSaver = GifSaver(memory, self._agent)
+        self.progressTracker = ProgressTracker(
+                ProgressTrackerParms(avgPerXEpisodes=10, longAvgPerXEpisodes=100))
+
+        self._agent = DdqnAgent(StandardAgentParameters, 
+                               action_size, 
+                               batchHelper, 
+                               self.progressTracker)
+        self._gifSaver = GifSaver(memory, 
+                                  self._agent, 
+                                  save_every_x_episodes=miscParameters.createGifEveryXEpisodes)
         
     def ShouldStop(self):
         return os.path.isfile("StopTraining.txt")
         
     def Run(self):
-        scoreHistory = []
         while(self.ShouldStop() == False):
-            startTime = time.time()
+            self.progressTracker.OnEpisodeStart()
             score, steps = self.RunOneEpisode()
-            elapsedTime = time.time() - startTime
+            self.progressTracker.OnEpisodeOver(score, steps)
             self._agent.OnGameOver(steps)
             self._gifSaver.OnEpisodeOver()
-            totalSteps = self._agent.total_step_count
-            episode = self._agent.total_episodes
-            scoreHistory.append(score)
-            print(f"Episode: {episode};  Score: {score};  Steps: {steps}; Time: {elapsedTime:.2f}")
-            if(len(scoreHistory) == 10):
-                avgScore = np.mean(scoreHistory)
-                print(f"Episode: {episode};  Average Score: {avgScore};  Total Steps:  {totalSteps}")
-                scoreHistory.clear()
         self._agent.OnExit()
 
     def OnNextEpisode(self):
         self._environment.reset()
         info = None
         for _ in range(np.random.randint(DdqnGlobals.FRAMES_PER_STATE, DdqnGlobals.MAX_NOOP)):
-            frame, _, done, info = self.NextStep(self._agent.GetFireAction())
+            frame, _, done, info = self.NextStep(self._agent.GetNoOpAction())
             self._memory.AddFrame(frame)
         return info
             
@@ -86,23 +86,21 @@ class EpisodeManager:
         return score, stepCount
              
 class Trainer:
-    def Run(self, whichGame):
+    def Run(self, whichGame, miscParams):
         env = gym.make(whichGame)
         print(env.unwrapped.get_action_meanings())
         memory = ActiveMemory()
         num_actions = env.action_space.n
         if('Pong' in whichGame):
             num_actions = 4  # Don't need RIGHTFIRE or LEFTFIRE (do we?)
-        mgr = EpisodeManager(env, memory, action_size = num_actions)
+        mgr = EpisodeManager(env, memory, action_size = num_actions, miscParameters=miscParams)
         mgr.Run()
 
-def Main(whichGame):
+def Main(whichGame, miscParams):
     trainer = Trainer()
-    trainer.Run(whichGame)
+    trainer.Run(whichGame, miscParams)
 
-#cProfile.run("Main()", "profilingResults.txt")
-#Main('PongDeterministic-v4')
-Main('BreakoutDeterministic-v4')
-
-
+#cProfile.run("Main('PongDeterministic-v4', )", "profilingResults.cprof")
+#Main('PongDeterministic-v4', LongEpisodeParameters)
+Main('BreakoutDeterministic-v4', ShortEpisodeParameters)
 
